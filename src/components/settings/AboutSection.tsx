@@ -20,6 +20,10 @@ import { WhatsNewDialog } from "@/components/WhatsNewDialog";
 import { WHATS_NEW_ENTRIES, entriesUpTo } from "@/lib/whatsNew";
 import appIcon from "@/assets/icons/app-icon.png";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  assertOfficialUpdateAllowed,
+  ForkUpdateBlockedError,
+} from "@/lib/updater";
 
 interface AboutSectionProps {
   isPortable: boolean;
@@ -108,6 +112,19 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleCheckUpdate = useCallback(async () => {
     if (hasUpdate) {
+      try {
+        await assertOfficialUpdateAllowed();
+      } catch (error) {
+        if (error instanceof ForkUpdateBlockedError) {
+          toast.info(t("settings.forkUpdateBlocked"), { closeButton: true });
+        } else {
+          toast.error(t("settings.checkUpdateFailed"), {
+            description: extractErrorMessage(error) || undefined,
+            closeButton: true,
+          });
+        }
+        return;
+      }
       if (isPortable) {
         try {
           await settingsApi.checkUpdates();
@@ -125,6 +142,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           toast.success(t("settings.upToDate"), { closeButton: true });
         }
       } catch (error) {
+        if (error instanceof ForkUpdateBlockedError) {
+          toast.info(t("settings.forkUpdateBlocked"), { closeButton: true });
+          return;
+        }
         console.error("[AboutSection] Update failed", error);
         toast.error(t("settings.updateFailed"), {
           description: extractErrorMessage(error) || undefined,

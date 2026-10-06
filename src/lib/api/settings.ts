@@ -6,6 +6,7 @@ import type {
   RemoteSnapshotInfo,
 } from "@/types";
 import type { AppId } from "./types";
+import { assertOfficialUpdateAllowed } from "@/lib/updater";
 
 export interface ConfigTransferResult {
   success: boolean;
@@ -54,6 +55,7 @@ export const settingsApi = {
   },
 
   async installUpdateAndRestart(): Promise<boolean> {
+    await assertOfficialUpdateAllowed();
     return await invoke("install_update_and_restart");
   },
 

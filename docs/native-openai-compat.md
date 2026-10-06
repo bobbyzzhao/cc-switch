@@ -64,15 +64,18 @@ pnpm exec vitest run tests/components/ProviderForm.codexOfficialCompatible.test.
 pnpm build:renderer
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --lib codex -- --test-threads=1
-pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+pnpm tauri build --bundles app --config src-tauri/tauri.fork.conf.json
 git push --force-with-lease fork HEAD:codex/native-gpt-compat
 ```
 
 The backup branch keeps the previous working release. Review the diff against
-the new release before distributing its build. Fork builds are not official
-signed updater artifacts; an official in-app update replaces the custom build.
-Keep using validated fork builds until upstream provides these capabilities.
-No automatic deployment or application restart is performed by these commands.
+the new release before distributing its build. The committed fork config gives
+the app a version such as `4.0.3-native-openai.1`; the UI and backend use that
+marker to keep checking the official feed while refusing to install an official
+bundle over the fork. Clicking the update action shows a message asking ChatGPT
+to rebase or merge the patch onto the latest official release and rebuild it.
+Fork builds are not official signed updater artifacts. No automatic deployment
+or application restart is performed by these commands.
 
 ## Upstream submission
 

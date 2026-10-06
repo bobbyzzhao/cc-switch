@@ -896,6 +896,7 @@
     "portableMode": "目前為可攜版，更新需手動下載。",
     "updateAvailable": "檢測到新版本：{{version}}",
     "updateBadge": "有更新可用",
+    "forkUpdateBlocked": "目前使用 fork 版本，請透過 ChatGPT 合入官方最新版本並升級。",
     "updateFailed": "更新安裝失敗，已嘗試開啟下載頁面。",
     "checkUpdateFailed": "檢查更新失敗，請稍後重試。",
     "openReleaseNotesFailed": "開啟更新日誌失敗",

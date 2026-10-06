@@ -896,6 +896,7 @@
     "portableMode": "Portable mode: updates require manual download.",
     "updateAvailable": "New version available: {{version}}",
     "updateBadge": "Update available",
+    "forkUpdateBlocked": "You are using a fork build. Use ChatGPT to merge the latest official version and upgrade.",
     "updateFailed": "Update installation failed, attempted to open download page.",
     "checkUpdateFailed": "Failed to check for updates, please try again later.",
     "openReleaseNotesFailed": "Failed to open release notes",

@@ -3,6 +3,27 @@
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
+/// Marker used by the maintained fork build.  The fork keeps checking the
+/// official release feed, but must never let the upstream installer replace
+/// the native OpenAI compatibility patch in-place.
+const NATIVE_OPENAI_FORK_VERSION_MARKER: &str = "-native-openai.";
+const FORK_UPDATE_BLOCKED_ERROR_PREFIX: &str = "fork_update_blocked:";
+
+fn is_native_openai_fork_version(version: &str) -> bool {
+    version.contains(NATIVE_OPENAI_FORK_VERSION_MARKER)
+}
+
+fn ensure_official_update_allowed(app: &AppHandle) -> Result<(), String> {
+    let version = app.package_info().version.to_string();
+    if is_native_openai_fork_version(&version) {
+        log::warn!("阻止官方更新覆盖 native OpenAI fork: 当前版本={version}");
+        return Err(format!(
+            "{FORK_UPDATE_BLOCKED_ERROR_PREFIX}当前使用 fork 版本，请通过 ChatGPT 合入官方最新版本并重新构建升级。"
+        ));
+    }
+    Ok(())
+}
+
 /// 应用更新下载进度（通过 `update-download-progress` 事件发给前端）。
 #[derive(Clone, serde::Serialize)]
 struct UpdateDownloadProgress {
@@ -196,6 +217,12 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
+    // Keep this guard in the backend as the final safety boundary.  The UI has
+    // the same check for a friendly toast, but direct invoke calls and future
+    // update entry points must not be able to install the official bundle over
+    // a fork build.
+    ensure_official_update_allowed(&app)?;
+
     let updater = app
         .updater_builder()
         .build()
@@ -314,7 +341,7 @@ pub async fn set_auto_launch(enabled: bool) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_settings_for_save;
+    use super::{is_native_openai_fork_version, merge_settings_for_save};
     use crate::settings::{
         AppSettings, CodexOfficialHistoryUnifyMigration, CodexProviderTemplateMigration,
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
@@ -617,6 +644,15 @@ mod tests {
         let merged = merge_settings_for_save(incoming, &existing);
 
         assert!(merged.local_migrations.is_none());
+    }
+
+    #[test]
+    fn native_openai_fork_version_marker_is_strict_enough_for_update_guard() {
+        assert!(is_native_openai_fork_version("4.0.3-native-openai.1"));
+        assert!(is_native_openai_fork_version("4.0.4-native-openai.12"));
+        assert!(!is_native_openai_fork_version("4.0.3"));
+        assert!(!is_native_openai_fork_version("4.0.3-beta.1"));
+        assert!(!is_native_openai_fork_version("4.0.3-native-openai"));
     }
 }
 

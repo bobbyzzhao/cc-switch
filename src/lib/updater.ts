@@ -1,5 +1,27 @@
 import { getVersion } from "@tauri-apps/api/app";
 
+const NATIVE_OPENAI_FORK_VERSION_MARKER = "-native-openai.";
+
+export function isNativeOpenAiForkVersion(version: string): boolean {
+  return version.includes(NATIVE_OPENAI_FORK_VERSION_MARKER);
+}
+
+export class ForkUpdateBlockedError extends Error {
+  constructor() {
+    super("Official updates cannot replace the native OpenAI fork build.");
+    this.name = "ForkUpdateBlockedError";
+  }
+}
+
+/** Check the running bundle's version before any official installer is started. */
+export async function assertOfficialUpdateAllowed(): Promise<void> {
+  // Do not use a display/cache fallback: failure to read the running version must
+  // stop installation, rather than accidentally overwrite a fork with upstream.
+  if (isNativeOpenAiForkVersion(await getVersion())) {
+    throw new ForkUpdateBlockedError();
+  }
+}
+
 export type UpdateChannel = "stable" | "beta";
 
 export interface UpdateInfo {

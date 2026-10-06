@@ -13,6 +13,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { settingsApi } from "@/lib/api";
+import { ForkUpdateBlockedError } from "@/lib/updater";
 
 const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
 
@@ -99,7 +101,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
         (e) => setProgress(e.payload),
       );
       // 成功时后端会下载+安装+重启，不会返回；返回 false 表示无可用更新。
-      const updating = await invoke<boolean>("install_update_and_restart");
+      const updating = await settingsApi.installUpdateAndRestart();
       unlistenRef.current?.();
       unlistenRef.current = null;
       if (!updating) {
@@ -110,10 +112,16 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
     } catch (e) {
       unlistenRef.current?.();
       unlistenRef.current = null;
-      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setErrorMsg(
+        e instanceof ForkUpdateBlockedError
+          ? t("settings.forkUpdateBlocked")
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
       setPhase("error");
     }
-  }, []);
+  }, [t]);
 
   const percent =
     progress && progress.total && progress.total > 0

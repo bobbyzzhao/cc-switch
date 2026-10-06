@@ -1,0 +1,9 @@
+{
+  "version": "4.0.3-native-openai.1",
+  "build": {
+    "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}
