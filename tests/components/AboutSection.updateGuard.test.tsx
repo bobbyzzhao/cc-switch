@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AboutSection } from "@/components/settings/AboutSection";
 
 const mocks = vi.hoisted(() => ({
-  version: "4.0.3-native-openai.1",
+  version: "4.0.7-native-openai.1",
   install: vi.fn(),
   checkUpdates: vi.fn(),
   toastInfo: vi.fn(),
@@ -21,7 +21,7 @@ vi.mock("@/contexts/UpdateContext", () => ({
     hasUpdate: true,
     updateInfo: {
       currentVersion: mocks.version,
-      availableVersion: "4.0.4",
+      availableVersion: "4.0.8",
       notes: "official release",
     },
     checkUpdate: mocks.checkUpdate,
@@ -55,7 +55,7 @@ vi.mock("react-i18next", () => ({
 
 describe("AboutSection fork update guard", () => {
   beforeEach(() => {
-    mocks.version = "4.0.3-native-openai.1";
+    mocks.version = "4.0.7-native-openai.1";
     mocks.install.mockReset();
     mocks.checkUpdates.mockReset();
     mocks.toastInfo.mockReset();
@@ -78,7 +78,7 @@ describe("AboutSection fork update guard", () => {
   });
 
   it("keeps the official installer path for an upstream build", async () => {
-    mocks.version = "4.0.3";
+    mocks.version = "4.0.7";
     mocks.install.mockResolvedValue(true);
     render(<AboutSection isPortable={false} />);
     await waitFor(() =>

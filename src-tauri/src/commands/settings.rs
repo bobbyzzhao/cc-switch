@@ -710,6 +710,7 @@ mod tests {
     fn native_openai_fork_version_marker_is_strict_enough_for_update_guard() {
         assert!(is_native_openai_fork_version("4.0.3-native-openai.1"));
         assert!(is_native_openai_fork_version("4.0.4-native-openai.12"));
+        assert!(is_native_openai_fork_version("4.0.7-native-openai.1"));
         assert!(!is_native_openai_fork_version("4.0.3"));
         assert!(!is_native_openai_fork_version("4.0.3-beta.1"));
         assert!(!is_native_openai_fork_version("4.0.3-native-openai"));

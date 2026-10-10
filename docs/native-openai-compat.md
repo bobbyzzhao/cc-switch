@@ -2,8 +2,8 @@
 
 This branch adds an explicit, disabled-by-default capability declaration for
 third-party Responses gateways that preserve OpenAI's native Codex compaction
-protocol. It is based on upstream `v4.0.3`
-(`8596a233b2373226a0307d5f80ec0954d5fa162f`). The fork's `main` remains upstream
+protocol. It is based on upstream `v4.0.7`
+(`790ed8009df809bedaf6c31b5ced05da46bb1f1f`). The fork's `main` remains upstream
 code; the patch is maintained on `codex/native-gpt-compat`.
 
 ## Behavior
@@ -23,9 +23,13 @@ output. This is a protocol declaration, not an automatic capability probe.
   Codex protocol negotiation and stable client session headers are retained, so
   account-pool gateways can keep ordinary, compaction and replay requests on the
   same account.
-- A native-compatible default or aggregation member enables the client's remote
-  compaction path. Ordinary aggregation members continue using the existing
-  summary bridge.
+- In Routing mode, the existing **Enable remote compaction** preference remains
+  authoritative. Native compatibility does not force remote compaction, and Fast
+  remains available with local compaction.
+- A native-compatible model actually published in the aggregation catalog
+  enables the shared client's remote compaction path. Skipped members and foreign
+  route-owned catalogs do not affect this decision. Ordinary aggregation members
+  continue using the existing summary bridge.
 - Unknown models, aliases and non-GPT models do not inherit official speed or
   compaction identity. Chat, Anthropic and managed OAuth providers cannot acquire
   this capability through stale metadata. Responses Lite remains disabled for
@@ -45,32 +49,33 @@ default provider.
 ## Updating the fork
 
 Keep the official repository as `upstream` and this fork as `fork`. Fetch official
-release tags and rebase the small patch branch onto the selected release. Do not
+release tags and merge the selected release into the patch branch. Do not
 merge development `main` merely to update a released build.
 
 ```sh
 git fetch upstream --tags
 git switch codex/native-gpt-compat
-git branch backup/native-gpt-compat-v4.0.3
-git rebase --onto <new-release-tag> v4.0.3
+git branch backup/native-gpt-compat-v4.0.7
+git merge --no-ff <new-release-tag>
 ```
 
-Resolve any conflicts, update the base tag/hash in this document, then run:
+Resolve any conflicts, update the base tag/hash in this document and the version
+in `src-tauri/tauri.fork.conf.json`, then run:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm exec vitest run tests/components/ProviderForm.codexOfficialCompatible.test.tsx tests/components/ProviderForm.stackModels.test.tsx tests/components/ProviderForm.codexManagedAccount.test.tsx
-pnpm build:renderer
+corepack pnpm install --frozen-lockfile
+corepack pnpm typecheck
+corepack pnpm exec vitest run tests/components/ProviderForm.codexOfficialCompatible.test.tsx tests/components/ProviderForm.stackModels.test.tsx tests/components/ProviderForm.codexManagedAccount.test.tsx tests/components/AboutSection.updateGuard.test.tsx
+corepack pnpm build:renderer
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --lib codex -- --test-threads=1
-pnpm tauri build --bundles app --config src-tauri/tauri.fork.conf.json
-git push --force-with-lease fork HEAD:codex/native-gpt-compat
+corepack pnpm tauri build --bundles app --config src-tauri/tauri.fork.conf.json
+git push fork HEAD:codex/native-gpt-compat
 ```
 
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
-the app a version such as `4.0.3-native-openai.1`; the UI and backend use that
+the app a version such as `4.0.7-native-openai.1`; the UI and backend use that
 marker to keep checking the official feed while refusing to install an official
 bundle over the fork. Clicking the update action shows a message asking ChatGPT
 to rebase or merge the patch onto the latest official release and rebuild it.
