@@ -181,10 +181,13 @@ describe("ProviderForm native OpenAI compatibility opt-in", () => {
     expect(screen.queryByRole("checkbox", { name: LABEL })).toBeNull();
   });
 
-  it("does not expose it for managed xAI OAuth providers", () => {
-    renderForm(vi.fn(), {
-      meta: { providerType: "xai_oauth", codexOfficialCompatible: true },
-    });
-    expect(screen.queryByRole("checkbox", { name: LABEL })).toBeNull();
-  });
+  it.each(["xai_oauth", "github_copilot"] as const)(
+    "does not expose it for managed %s providers",
+    (providerType) => {
+      renderForm(vi.fn(), {
+        meta: { providerType, codexOfficialCompatible: true },
+      });
+      expect(screen.queryByRole("checkbox", { name: LABEL })).toBeNull();
+    },
+  );
 });

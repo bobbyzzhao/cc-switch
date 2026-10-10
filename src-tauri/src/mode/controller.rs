@@ -1213,18 +1213,17 @@ pub fn stack_views(state: &AppState, app: &AppType) -> Result<StackView, String>
     })
 }
 
-/// [`stack_views`] 再加上 Codex 客户端是不是还在用旧的模型列表（要读进程表，放到阻塞线程池
-/// 里）。路由那家自己管理目录时，Stack 模型本来就不发布，重启也看不到，已经有 `notice` 说明，
-/// 不再查。
+/// [`stack_views`] 再加上 Codex 客户端是否可能缓存旧登录或模型列表（要读进程表，放到阻塞线程
+/// 池里）。账号与目录检测都不分模式：切换账号、直连↔路由切换也会让已启动的客户端拿着旧登录
+/// 或旧目录，同样要重启。路由那家自己管理目录时，重启也看不到 CC Switch 的目录，已经有
+/// `notice` 说明，不再查目录。没有目录时（直连、路由那家没配目录）照样查：之前在 CC Switch
+/// 的目录时启动的客户端还拿着它。
 pub async fn stack_view_with_clients(state: &AppState, app: &AppType) -> Result<StackView, String> {
     let mut view = stack_views(state, app)?;
-    if matches!(app, AppType::Codex)
-        && view.active
-        && view.notice != Some("routeOwnsCatalog")
-        && codex_publishes_stack_models(state, &settled_stack(app)?)
-    {
-        view.stale_clients = codex_direct::off_runtime(|| {
-            codex_client_catalog::stale_clients(&DeviceStore::for_device())
+    if matches!(app, AppType::Codex) {
+        let check_catalog = view.notice != Some("routeOwnsCatalog");
+        view.stale_clients = codex_direct::off_runtime(move || {
+            codex_client_catalog::stale_clients(&DeviceStore::for_device(), check_catalog)
         })
         .await
         .map_err(err)?;
@@ -1232,19 +1231,9 @@ pub async fn stack_view_with_clients(state: &AppState, app: &AppType) -> Result<
     Ok(view)
 }
 
-/// Codex 接着代理，名单里有要发布的 Stack 模型。
-fn codex_publishes_stack_models(state: &AppState, stack: &StackState) -> bool {
-    attached_route(state, &AppType::Codex)
-        .ok()
-        .flatten()
-        .is_some_and(|(_, route)| {
-            stack::published_members(&state.db, &AppType::Codex, stack, Some(&route.id))
-                .is_ok_and(|published| !published.is_empty())
-        })
-}
-
 /// Codex 在 Stack 模式下有要发布的 Stack 模型，客户端却看不到或看不全：路由那家自己管理模型
-/// 目录文件（Stack 模型不发布）；或者官方做默认、最近一次写目录时没拿到官方列表。
+/// 目录文件（Stack 模型不发布）；或者官方做默认、最近一次写目录时没拿到官方列表，或者拿到的
+/// 列表里没有能选的模型（本机 Codex 太旧）。
 fn codex_stack_notice(state: &AppState, stack: &StackState) -> Option<&'static str> {
     let (_, route) = attached_route(state, &AppType::Codex).ok()??;
     let published =
@@ -1262,6 +1251,7 @@ fn codex_stack_notice(state: &AppState, stack: &StackState) -> Option<&'static s
         codex_official_models::NativeSource::Fetched => None,
         codex_official_models::NativeSource::Bundled => Some("officialModelsBundled"),
         codex_official_models::NativeSource::Unavailable => Some("officialModelsUnavailable"),
+        codex_official_models::NativeSource::Outdated => Some("officialModelsOutdated"),
     }
 }
 
@@ -1288,6 +1278,24 @@ pub async fn adopt_codex_stack_catalog(state: &AppState) -> Result<Option<&'stat
     Ok(settled_stack(&app)
         .ok()
         .and_then(|stack| codex_stack_notice(state, &stack)))
+}
+
+/// 「经典子 agent」开关（`codex_stack_classic_subagents`）变了：Codex 在 Stack 模式下按新的
+/// 合并目录重写客户端（契约里有目录，没变就什么都不做）。不在 Stack 模式时目录里没有这个开关
+/// 管的行，等进 Stack 时自然按开关写。
+pub async fn resync_codex_stack_catalog(state: &AppState) -> Result<(), String> {
+    let app = AppType::Codex;
+    let _guard = lock_settled(state, &app).await.map_err(err)?;
+    if !settled_stack(&app)?.enabled {
+        return Ok(());
+    }
+    let Some((mode, route)) = attached_route(state, &app)? else {
+        return Ok(());
+    };
+    let live_now = LiveNow::of(state, &app, &mode)?;
+    write_proxy(state, &app, op::APPLY, &route, &live_now, mode, None)
+        .await
+        .map(|_| ())
 }
 
 /// 路由供应商的行或代理地址变了：按新契约重写客户端（契约没变就什么都不做）。调用方
@@ -5864,6 +5872,58 @@ model_provider = "c"
 
     #[tokio::test]
     #[serial]
+    async fn codex_native_route_respects_remote_compaction_toggle() {
+        let _home = Home::new();
+        seed_codex("", None);
+        let mut relay = codex_native(
+            "relay",
+            "https://relay.example/v1",
+            "",
+            Some(json!({ "models": [{ "model": "gpt-relay" }] })),
+        );
+        relay.meta.as_mut().unwrap().codex_official_compatible = Some(true);
+        let state = state_with(AppType::Codex, &[relay.clone()], "relay").await;
+        enter(&state, &AppType::Codex, false).await.unwrap();
+        let provider_name = || {
+            let doc = codex_doc();
+            let id = doc["model_provider"].as_str().unwrap();
+            doc["model_providers"][id]["name"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_ne!(
+            provider_name(),
+            "OpenAI",
+            "declaring native compatibility must not enable remote compaction"
+        );
+        let catalog = codex_catalog();
+        for enabled in [true, false, true] {
+            let mut config = relay.settings_config["config"]
+                .as_str()
+                .unwrap()
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            config["model_providers"]["relay"]["name"] =
+                toml_edit::value(if enabled { "OpenAI" } else { "relay" });
+            relay.settings_config["config"] = json!(config.to_string());
+            ProviderService::update(&state, AppType::Codex, None, relay.clone()).unwrap();
+            assert_eq!(provider_name() == "OpenAI", enabled);
+            assert_eq!(
+                codex_catalog(),
+                catalog,
+                "the remote-compaction preference does not change model capabilities"
+            );
+            assert_eq!(
+                crate::proxy::providers::resolve_codex_catalog_tool_profile(&relay),
+                crate::codex_config::CodexCatalogToolProfile::OfficialResponses
+            );
+        }
+        state.proxy_service.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn codex_native_relay_compaction_keeps_the_upstream_ciphertext() {
         let _home = Home::new();
         seed_codex("[features]\nmemories = true\n", None);
@@ -5900,15 +5960,28 @@ model_provider = "c"
         let upstream = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut relay = codex_native("relay", &format!("http://{address}/v1"), "", None);
         relay.meta.as_mut().unwrap().codex_official_compatible = Some(true);
-        let state = state_with(AppType::Codex, &[relay], "relay").await;
+        let mut config = relay.settings_config["config"]
+            .as_str()
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        config["model_providers"]["relay"]["name"] = toml_edit::value("OpenAI");
+        relay.settings_config["config"] = json!(config.to_string());
+        let generic = codex_native("generic", "https://generic.example/v1", "", None);
+        let state = state_with(AppType::Codex, &[relay, generic], "relay").await;
         for stack in [false, true] {
             enter(&state, &AppType::Codex, stack).await.expect("enter");
+            if stack {
+                set_route(&state, &AppType::Codex, "generic").await.unwrap();
+                set_codex_member(&state, "relay", true).await;
+            }
             let doc = codex_doc();
             let id = doc["model_provider"].as_str().unwrap();
             assert_eq!(doc["model_providers"][id]["name"].as_str(), Some("OpenAI"));
             assert_eq!(doc["features"]["memories"].as_bool(), Some(true));
             let request = json!({
-                "model": "gpt-relay", "stream": true, "service_tier": "priority",
+                "model": if stack { "ccs-relay/gpt-relay" } else { "gpt-relay" },
+                "stream": true, "service_tier": "priority",
                 "prompt_cache_key": "stable-client-session",
                 "input": [{ "type": "compaction_trigger" }],
                 "tools": [{ "type": "function", "name": "shell", "parameters": {"type":"object"} }]
@@ -5934,6 +6007,7 @@ model_provider = "c"
                 "native SSE stays intact"
             );
             let (headers, body) = seen.lock().await.pop().unwrap();
+            assert_eq!(body["model"], "gpt-relay");
             assert_eq!(body["input"], request["input"]);
             assert_eq!(body["tools"], request["tools"]);
             assert_eq!(body["service_tier"], "priority");
@@ -5969,6 +6043,39 @@ model_provider = "c"
         assert_eq!(provider_name(), "OpenAI");
         set_codex_member(&state, "native", false).await;
         assert_ne!(provider_name(), "OpenAI");
+        state.proxy_service.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_unpublished_native_member_keeps_the_route_compaction_setting() {
+        let _home = Home::new();
+        seed_codex("", None);
+        let generic = codex_native(
+            "generic",
+            "https://generic.example/v1",
+            "model_catalog_json = \"/opt/team/models.json\"\n",
+            None,
+        );
+        let mut native = codex_native("native", "https://native.example/v1", "", None);
+        native.meta.as_mut().unwrap().codex_official_compatible = Some(true);
+        let state = state_with(AppType::Codex, &[generic, native], "generic").await;
+        enter(&state, &AppType::Codex, true).await.unwrap();
+        let before = codex_text();
+        let notice = set_stack_member(&state, &AppType::Codex, "native", true)
+            .await
+            .unwrap();
+        assert_eq!(notice, Some("routeOwnsCatalog"));
+        assert!(stack_state_of(&AppType::Codex).is_member("native"));
+        assert_eq!(
+            codex_doc()["model_catalog_json"].as_str(),
+            Some("/opt/team/models.json")
+        );
+        assert_eq!(
+            codex_text(),
+            before,
+            "an unpublished native member must not change the client's compaction capability"
+        );
         state.proxy_service.stop().await.unwrap();
     }
 
@@ -6057,6 +6164,66 @@ model_provider = "c"
             .live_has_proxy_placeholder(&AppType::Codex));
     }
 
+    fn set_classic_subagents(enabled: bool) {
+        crate::settings::update_settings(crate::settings::AppSettings {
+            codex_stack_classic_subagents: enabled,
+            ..crate::settings::get_settings()
+        })
+        .unwrap();
+    }
+
+    fn catalog_agent_versions() -> Vec<Value> {
+        codex_catalog()["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["multi_agent_version"].clone())
+            .collect()
+    }
+
+    /// 「经典子 agent」开关：Stack 模式下立刻按开关重写合并目录，关掉后回到原来的目录；
+    /// 不在 Stack 模式时什么都不写。
+    #[tokio::test]
+    #[serial]
+    async fn classic_subagents_toggle_rewrites_the_stack_catalog() {
+        let _home = Home::new();
+        seed_codex("approval_policy = \"on-request\"\n", None);
+        let state = state_with(AppType::Codex, &codex_stack_rows(), "a").await;
+
+        // 还没进 Stack：开关只存设置，不碰客户端文件。
+        set_classic_subagents(true);
+        let before = codex_text();
+        resync_codex_stack_catalog(&state).await.expect("no-op");
+        assert_eq!(codex_text(), before);
+        set_classic_subagents(false);
+
+        enter(&state, &AppType::Codex, true).await.expect("enter");
+        set_codex_member(&state, "deepseek", true).await;
+        let native_catalog = codex_catalog();
+        let native_contract = mode(&AppType::Codex).contract.unwrap();
+        assert!(catalog_agent_versions().iter().all(|v| v != "v1"));
+
+        set_classic_subagents(true);
+        resync_codex_stack_catalog(&state).await.expect("classic");
+        assert_eq!(catalog_agent_versions(), vec![json!("v1"), json!("v1")]);
+        assert_ne!(mode(&AppType::Codex).contract.unwrap(), native_contract);
+
+        // 之后增删 Stack 模型照样按开关写。
+        set_codex_member(&state, "zhipu", true).await;
+        assert_eq!(
+            catalog_agent_versions(),
+            vec![json!("v1"), json!("v1"), json!("v1")]
+        );
+        set_codex_member(&state, "zhipu", false).await;
+
+        set_classic_subagents(false);
+        resync_codex_stack_catalog(&state).await.expect("native");
+        assert_eq!(codex_catalog(), native_catalog);
+        assert_eq!(mode(&AppType::Codex).contract.unwrap(), native_contract);
+
+        exit(&state, &AppType::Codex).await.expect("exit");
+    }
+
     /// 路由那家自己管理模型目录文件：Stack 模型发布不了，名单照存，结果带提示而不是静默成功。
     #[tokio::test]
     #[serial]
@@ -6139,8 +6306,44 @@ model_provider = "c"
             .stale_clients
     }
 
-    /// 桌面版在目录变化之前启动：Stack 视图带上 `staleClients`；之后启动的不算旧。路由模式、
-    /// 路由那家自己管理目录（Stack 模型本来就不发布）时不查。
+    /// 直连切号也提示可能缓存旧登录，不要求生成模型目录。
+    #[tokio::test]
+    #[serial]
+    async fn codex_direct_account_switch_reports_the_cached_login() {
+        let _home = Home::new();
+        let clients = FakeClients::install();
+        seed_codex("", Some(&chatgpt_login("acct-a")));
+        let official = |id: &str| {
+            let mut row = Provider::with_id(
+                id.to_string(),
+                id.to_uppercase(),
+                json!({ "auth": chatgpt_login(id), "config": "" }),
+                None,
+            );
+            row.category = Some("official".to_string());
+            row
+        };
+        let state = state_with(
+            AppType::Codex,
+            &[official("acct-a"), official("acct-b")],
+            "acct-a",
+        )
+        .await;
+        ProviderService::switch(&state, AppType::Codex, "acct-a").unwrap();
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+        clients.advance(10_000);
+        ProviderService::switch(&state, AppType::Codex, "acct-b").unwrap();
+        clients.desktop_running_for("00:15");
+        assert_eq!(codex_login_on_disk()["tokens"]["account_id"], "acct-b");
+        assert!(stale_clients_of(&state).await.is_some());
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+    }
+
+    /// 桌面版在目录变化之前启动：Stack 视图带上 `staleClients`；之后启动的不算旧。
     #[tokio::test]
     #[serial]
     async fn codex_stack_view_reports_clients_on_an_old_catalog() {
@@ -6155,7 +6358,8 @@ model_provider = "c"
             stale_clients_of(&state).await,
             Some(codex_client_catalog::StaleClients {
                 daemon: false,
-                others: true
+                others: true,
+                auth: false
             })
         );
         // 普通的 Stack 视图不读进程表。
@@ -6175,11 +6379,136 @@ model_provider = "c"
         clients.desktop_running_for("00:15");
         assert!(stale_clients_of(&state).await.is_some());
 
-        // 换成路由模式：不是 Stack 模式，不查。
+        // 换成路由模式，路由那家没有模型目录：指针撤掉了，桌面版还拿着 Stack 的目录，照样报。
+        clients.advance(10_000);
         enter(&state, &AppType::Codex, false)
             .await
             .expect("routing");
+        assert_eq!(codex_doc().get("model_catalog_json"), None);
+        assert!(stale_clients_of(&state).await.is_some());
+        // 重开之后启动：读的是内置列表，和现在一致。
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+    }
+
+    /// 从带目录的路由退回没有目录的直连：路由时启动的客户端还拿着路由那家的目录，要报；
+    /// 从没进过代理的直连用户（一直没有目录）不报。
+    #[tokio::test]
+    #[serial]
+    async fn codex_leaving_route_reports_clients_still_on_the_route_catalog() {
+        let _home = Home::new();
+        let clients = FakeClients::install();
+        seed_codex("", None);
+        let route = codex_native(
+            "b",
+            "https://b.example/v1",
+            "",
+            Some(json!({ "models": [{ "model": "b-main", "displayName": "B Main" }] })),
+        );
+        let state = state_with(
+            AppType::Codex,
+            &[codex_native("a", "https://a.example/v1", "", None), route],
+            "a",
+        )
+        .await;
+        // 一直直连、没有目录：早就在跑的客户端不报。
         clients.desktop_running_for("10:00");
+        assert_eq!(stale_clients_of(&state).await, None);
+
+        enter_with_route(&state, &AppType::Codex, false, Some("b"))
+            .await
+            .expect("routing");
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+
+        clients.advance(10_000);
+        exit(&state, &AppType::Codex).await.expect("exit");
+        assert_eq!(codex_doc().get("model_catalog_json"), None);
+        assert_eq!(
+            stale_clients_of(&state).await,
+            Some(codex_client_catalog::StaleClients {
+                daemon: false,
+                others: true,
+                auth: false
+            })
+        );
+
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+    }
+
+    /// 直连切到路由模式后写进了模型目录，直连时启动的客户端还拿着旧配置：路由模式（非聚合）
+    /// 的视图也要报 `staleClients`；客户端重开、读到现在这份后不报。
+    #[tokio::test]
+    #[serial]
+    async fn codex_route_view_reports_clients_stale_after_a_mode_switch() {
+        let _home = Home::new();
+        let clients = FakeClients::install();
+        seed_codex("", None);
+        let route = codex_native(
+            "b",
+            "https://b.example/v1",
+            "",
+            Some(json!({ "models": [{ "model": "b-main", "displayName": "B Main" }] })),
+        );
+        let state = state_with(
+            AppType::Codex,
+            &[codex_native("a", "https://a.example/v1", "", None), route],
+            "a",
+        )
+        .await;
+        // 客户端在直连时启动（这时没有目录指针）。
+        clients.desktop_running_for("10:00");
+        assert_eq!(stale_clients_of(&state).await, None);
+
+        enter_with_route(&state, &AppType::Codex, false, Some("b"))
+            .await
+            .expect("routing");
+        assert_eq!(
+            codex_doc()["model_catalog_json"].as_str(),
+            Some(crate::codex_config::CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        );
+        assert_eq!(
+            stale_clients_of(&state).await,
+            Some(codex_client_catalog::StaleClients {
+                daemon: false,
+                others: true,
+                auth: false
+            })
+        );
+
+        // 客户端重开之后启动：读到的正是现在这份目录。
+        clients.advance(10_000);
+        clients.desktop_running_for("00:05");
+        assert_eq!(stale_clients_of(&state).await, None);
+    }
+
+    /// 路由那家自己管理模型目录时（行的指针指向别处），路由模式的视图同样不查：CC Switch 的
+    /// 目录不在线上，重启也看不到它。
+    #[tokio::test]
+    #[serial]
+    async fn codex_route_mode_with_its_own_catalog_does_not_report_clients() {
+        let _home = Home::new();
+        let clients = FakeClients::install();
+        seed_codex("", None);
+        clients.desktop_running_for("10:00");
+        let route = codex_native(
+            "a",
+            "https://a.example/v1",
+            "model_catalog_json = \"/opt/team/models.json\"\n",
+            None,
+        );
+        let state = state_with(AppType::Codex, &[route], "a").await;
+        enter(&state, &AppType::Codex, false)
+            .await
+            .expect("routing");
+        assert_eq!(
+            codex_doc()["model_catalog_json"].as_str(),
+            Some("/opt/team/models.json")
+        );
         assert_eq!(stale_clients_of(&state).await, None);
     }
 
@@ -6651,6 +6980,33 @@ model_provider = "c"
         assert!(codex_doc().get("model_catalog_json").is_none());
         exit(&state, &AppType::Codex).await.expect("exit");
         assert_eq!(fs::read(codex_auth_path()).unwrap(), auth_bytes);
+    }
+
+    /// #8014：本机 Codex 太旧时服务端只回隐藏条目。照写的话官方模型在选择器里一个都
+    /// 看不到、只剩 Stack 模型；不写这种目录，并提示升级。
+    #[tokio::test]
+    #[serial]
+    async fn codex_official_list_without_a_listed_model_is_not_published() {
+        let _home = Home::new();
+        seed_codex("", Some(&chatgpt("ws", "alice")));
+        let mut models = native_models(&[("gpt-5.5", 1), ("codex-auto-review", 2)]);
+        for model in &mut models {
+            model["visibility"] = serde_json::json!("hide");
+        }
+        let _fake = fake_models(
+            vec![Fetch::Models { models, etag: None }],
+            CodexKeychainLogin::Missing,
+            None,
+        );
+        let official = crate::database::CODEX_OFFICIAL_PROVIDER_ID;
+        let state = state_with(AppType::Codex, &codex_official_stack_rows(), official).await;
+        enter(&state, &AppType::Codex, true).await.expect("enter");
+        set_codex_member(&state, "deepseek", true).await;
+        assert!(codex_doc().get("model_catalog_json").is_none());
+        assert_eq!(
+            stack_views(&state, &AppType::Codex).unwrap().notice,
+            Some("officialModelsOutdated")
+        );
     }
 
     /// 列表变了而重写失败（这里是 config.toml 恰好解析不了）：缓存已经是新的，下一次检查
