@@ -13,6 +13,19 @@ fn is_native_openai_fork_version(version: &str) -> bool {
     version.contains(NATIVE_OPENAI_FORK_VERSION_MARKER)
 }
 
+/// Fork revisions track an already incorporated official release, rather than
+/// prereleases awaiting that release. Keep standard updater semantics elsewhere.
+pub(crate) fn is_official_update_newer(
+    mut current: semver::Version,
+    available: semver::Version,
+) -> bool {
+    if is_native_openai_fork_version(&current.to_string()) {
+        current.pre = semver::Prerelease::EMPTY;
+        return available.cmp_precedence(&current).is_gt();
+    }
+    available > current
+}
+
 fn ensure_official_update_allowed(app: &AppHandle) -> Result<(), String> {
     let version = app.package_info().version.to_string();
     if is_native_openai_fork_version(&version) {
@@ -401,7 +414,7 @@ pub async fn set_auto_launch(enabled: bool) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_native_openai_fork_version, merge_settings_for_save};
+    use super::{is_native_openai_fork_version, is_official_update_newer, merge_settings_for_save};
     use crate::settings::{
         AppSettings, CodexOfficialHistoryUnifyMigration, CodexProviderTemplateMigration,
         CodexThirdPartyHistoryProviderBucketMigration, LocalMigrations, S3SyncSettings,
@@ -711,9 +724,34 @@ mod tests {
         assert!(is_native_openai_fork_version("4.0.3-native-openai.1"));
         assert!(is_native_openai_fork_version("4.0.4-native-openai.12"));
         assert!(is_native_openai_fork_version("4.0.7-native-openai.1"));
+        assert!(is_native_openai_fork_version("4.0.7-native-openai.2"));
         assert!(!is_native_openai_fork_version("4.0.3"));
         assert!(!is_native_openai_fork_version("4.0.3-beta.1"));
         assert!(!is_native_openai_fork_version("4.0.3-native-openai"));
+    }
+
+    #[test]
+    fn fork_update_comparison_uses_the_official_release_baseline() {
+        for (current, available, expected) in [
+            ("4.0.7-native-openai.1", "4.0.7", false),
+            ("4.0.7-native-openai.2", "4.0.7", false),
+            ("4.0.7-native-openai.2", "4.0.7+build.1", false),
+            ("4.0.7-native-openai.2", "4.0.7-beta.1", false),
+            ("4.0.7-native-openai.2", "4.0.6", false),
+            ("4.0.7-native-openai.2", "4.0.8", true),
+            ("4.0.7-native-openai.2", "4.0.10", true),
+            ("4.0.7-native-openai.2", "4.1.0", true),
+            ("4.0.7-native-openai.2", "5.0.0", true),
+            ("4.0.7", "4.0.7", false),
+            ("4.0.7", "4.0.8", true),
+            ("4.0.7-beta.1", "4.0.7", true),
+        ] {
+            assert_eq!(
+                is_official_update_newer(current.parse().unwrap(), available.parse().unwrap()),
+                expected,
+                "current={current}, available={available}",
+            );
+        }
     }
 }
 

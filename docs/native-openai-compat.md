@@ -75,12 +75,17 @@ git push fork HEAD:codex/native-gpt-compat
 
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
-the app a version such as `4.0.7-native-openai.1`; the UI and backend use that
+the app a version such as `4.0.7-native-openai.2`; the UI and backend use that
 marker to keep checking the official feed while refusing to install an official
 bundle over the fork. Clicking the update action shows a message asking ChatGPT
 to rebase or merge the patch onto the latest official release and rebuild it.
 Fork builds are not official signed updater artifacts. No automatic deployment
 or application restart is performed by these commands.
+
+Update checks compare fork builds against their official release baseline:
+`4.0.7-native-openai.2` is current when the official feed reports `4.0.7`.
+A higher official release, such as `4.0.8`, still triggers the normal reminder
+and the fork installation guard. Other builds keep standard version comparison.
 
 ## Upstream submission
 
