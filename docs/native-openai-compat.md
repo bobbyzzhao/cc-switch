@@ -2,8 +2,8 @@
 
 This branch adds an explicit, disabled-by-default capability declaration for
 third-party Responses gateways that preserve OpenAI's native Codex compaction
-protocol. It is based on upstream `v4.0.8`
-(`df40d53c36b604e044b4d5b9091aeb961aa56990`). The fork's `main` remains upstream
+protocol. It is based on upstream `v4.0.9`
+(`8845b1ef799aa8810b864b122de6af5f4629de10`). The fork's `main` remains upstream
 code; the patch is maintained on `codex/native-gpt-compat`.
 
 ## Behavior
@@ -55,7 +55,7 @@ merge development `main` merely to update a released build.
 ```sh
 git fetch upstream --tags
 git switch codex/native-gpt-compat
-git branch backup/native-gpt-compat-v4.0.8
+git branch backup/native-gpt-compat-v4.0.9
 git merge --no-ff <new-release-tag>
 ```
 
@@ -75,7 +75,7 @@ git push fork HEAD:codex/native-gpt-compat
 
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
-the app a version such as `4.0.8-native-openai.1`; the UI and backend use that
+the app a version such as `4.0.9-native-openai.1`; the UI and backend use that
 marker to keep checking the official feed while refusing to install an official
 bundle over the fork. Clicking the update action shows a message asking ChatGPT
 to rebase or merge the patch onto the latest official release and rebuild it.
@@ -83,8 +83,8 @@ Fork builds are not official signed updater artifacts. No automatic deployment
 or application restart is performed by these commands.
 
 Update checks compare fork builds against their official release baseline:
-`4.0.8-native-openai.1` is current when the official feed reports `4.0.8`.
-A higher official release, such as `4.0.9`, still triggers the normal reminder
+`4.0.9-native-openai.1` is current when the official feed reports `4.0.9`.
+A higher official release, such as `4.0.10`, still triggers the normal reminder
 and the fork installation guard. Other builds keep standard version comparison.
 
 ## Upstream submission
