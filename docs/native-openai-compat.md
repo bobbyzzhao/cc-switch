@@ -73,6 +73,12 @@ corepack pnpm tauri build --bundles app --config src-tauri/tauri.fork.conf.json
 git push fork HEAD:codex/native-gpt-compat
 ```
 
+If a macOS release build fails to load procedural macros with
+`mis-aligned LINKEDIT string pool`, set
+`CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none` for the build. This works around
+[rust-lang/rust#157750](https://github.com/rust-lang/rust/issues/157750) by retaining
+symbols in build-time helpers; the application's release strip setting is kept.
+
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
 the app a version such as `4.0.12-native-openai.1`; the UI and backend use that
