@@ -639,6 +639,7 @@ mod tests {
                     migrated_state_rows: 7,
                     codex_config_dir: None,
                 }),
+                ..LocalMigrations::default()
             }),
             ..AppSettings::default()
         };
@@ -692,6 +693,7 @@ mod tests {
                     migrated_state_rows: 2,
                     codex_config_dir: None,
                 }),
+                ..LocalMigrations::default()
             }),
             ..AppSettings::default()
         };
