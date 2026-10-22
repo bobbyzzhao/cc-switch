@@ -163,10 +163,12 @@ async function renderApps() {
   // 安装 / 升级的状态放在模块级 store 里，跨挂载保留。
   const { AppsPage } = await import("@/components/apps/AppsPage");
   const view = mountApps(AppsPage);
+  // Both header labels stay mounted to reserve their width. Wait for the idle
+  // label to be shown, including when a pending dialog hides the page itself.
   await waitFor(() =>
     expect(
       within(view.container).getByText("appsPage.checkUpdates"),
-    ).toBeInTheDocument(),
+    ).toHaveAttribute("aria-hidden", "false"),
   );
   return view;
 }
@@ -1288,7 +1290,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
     });
     const { AppsPage } = await import("@/components/apps/AppsPage");
     const view = mountApps(AppsPage);
-    await waitFor(() => expect(mocks.getToolVersions).toHaveBeenCalledTimes(9));
+    await waitFor(() => expect(mocks.getToolVersions).toHaveBeenCalledTimes(10));
     view.unmount();
     const remounted = await renderApps();
     fireEvent.click(updateButton("Claude Code"));
@@ -1737,6 +1739,15 @@ describe("AppsPage concurrent CLI upgrades", () => {
         card("Claude Code").getAllByLabelText("common.loading").length,
       ).toBeGreaterThan(0),
     );
+    // 等原任务的版本刷新真正发出（初始探测 + 刷新共 2 次）再卸载，
+    // 否则机器慢时刷新可能落在重新挂载之后，计数就会抖
+    await waitFor(() =>
+      expect(
+        mocks.getToolVersions.mock.calls.filter(([tools]) =>
+          tools.includes("claude"),
+        ),
+      ).toHaveLength(2),
+    );
     view.unmount();
     const now = vi
       .spyOn(Date, "now")
@@ -1755,7 +1766,12 @@ describe("AppsPage concurrent CLI upgrades", () => {
     }
     expect(updateButton("Claude Code")).toBeDisabled();
     expect(updateButton("Claude Code")).toHaveAttribute("aria-busy", "true");
-    expect(updateButton("Codex")).toBeEnabled();
+    // 缓存过期，重新挂载时别的工具会重新探测版本；等探测完、按钮出来再点「全部更新」，
+    // 不然机器慢时这几行还在加载
+    await waitFor(() => {
+      expect(updateButton("Codex")).toBeEnabled();
+      expect(updateButton("Gemini CLI")).toBeEnabled();
+    });
     fireEvent.click(updateAllButton());
     await waitFor(() =>
       expect(mocks.runToolLifecycleAction).toHaveBeenCalledTimes(3),

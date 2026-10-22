@@ -17,6 +17,7 @@ pub(super) fn candidates(
             version: None,
             runnable: true,
             error: None,
+            exited_with_error: false,
             source: "wsl".into(),
             is_path_default: true,
         };
@@ -219,6 +220,7 @@ fn brew_uninstall_command(tool: &str, real: &str) -> Result<Option<String>, Stri
                 "codex" => &[("/Caskroom/", "codex")],
                 "gemini" => &[("/Cellar/", "gemini-cli")],
                 "opencode" => &[("/Cellar/", "opencode")],
+                "agy" => &[("/Caskroom/", "antigravity-cli")],
                 _ => &[],
             };
             if !owners.contains(&(marker, token)) {
@@ -413,6 +415,11 @@ fn known_native_install(tool: &str, inst: &ToolInstallation) -> bool {
         "opencode" => {
             normalized.ends_with("/.opencode/bin/opencode")
                 || normalized.ends_with("/.opencode/bin/opencode.exe")
+        }
+        // Official install.sh / install.ps1 targets. A cask binary the self-updater
+        // replaced in place sits in Homebrew's bin and stays a manual uninstall.
+        "agy" => {
+            normalized.ends_with("/.local/bin/agy") || normalized.ends_with("/agy/bin/agy.exe")
         }
         _ => false,
     }
@@ -791,6 +798,7 @@ mod tests {
             version: None,
             runnable: false,
             error: None,
+            exited_with_error: false,
             source: "system".into(),
             is_path_default: true,
         }
@@ -1387,6 +1395,7 @@ mod tests {
                 version: None,
                 runnable: false,
                 error: None,
+                exited_with_error: false,
                 source: "homebrew".into(),
                 is_path_default: true,
             };
@@ -1408,6 +1417,7 @@ mod tests {
             ("codex", "Caskroom", "codex", "--cask"),
             ("gemini", "Cellar", "gemini-cli", "--formula"),
             ("opencode", "Cellar", "opencode", "--formula"),
+            ("agy", "Caskroom", "antigravity-cli", "--cask"),
         ] {
             let real = format!("{prefix}/{location}/{token}/1/bin/{tool}");
             let command = brew_uninstall_command(tool, &real).unwrap().unwrap();
@@ -1422,6 +1432,7 @@ mod tests {
             version: None,
             runnable: true,
             error: None,
+            exited_with_error: false,
             source: "homebrew".into(),
             is_path_default: true,
         };
@@ -1523,6 +1534,8 @@ mod tests {
                 ".codex/packages/standalone/releases/0.150.0-linux/codex",
             ),
             ("opencode", ".opencode/bin/opencode"),
+            ("agy", ".local/bin/agy"),
+            ("agy", "AppData/Local/agy/bin/agy.exe"),
         ] {
             let path = temp.path().join(binary);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1568,7 +1581,7 @@ mod tests {
         std::fs::write(&executable, "MZ").unwrap();
         std::fs::write(&config, "settings").unwrap();
         let inst = installation(&executable);
-        remove_native_files(&inst, &[inst.real.clone()]).unwrap();
+        remove_native_files(&inst, std::slice::from_ref(&inst.real)).unwrap();
         assert!(!executable.exists());
         assert_eq!(std::fs::read_to_string(config).unwrap(), "settings");
     }
@@ -1580,7 +1593,7 @@ mod tests {
         std::fs::write(&executable, "MZ").unwrap();
         let mut inst = installation(&executable);
         inst.real = temp.path().join("another.exe");
-        assert!(remove_native_files(&inst, &[executable.clone()]).is_err());
+        assert!(remove_native_files(&inst, std::slice::from_ref(&executable)).is_err());
         assert!(executable.exists());
     }
 
