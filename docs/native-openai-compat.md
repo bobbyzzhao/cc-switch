@@ -2,8 +2,8 @@
 
 This branch adds an explicit, disabled-by-default capability declaration for
 third-party Responses gateways that preserve OpenAI's native Codex compaction
-protocol. It is based on upstream `v4.0.18`
-(`cb90a2440d1a771d67f46b65b2e0f2ea5106ce85`). The fork's `main` remains upstream
+protocol. It is based on upstream `v4.0.19`
+(`319fbfd25ef243f3d3f7783b7a291b073309895d`). The fork's `main` remains upstream
 code; the patch is maintained on `codex/native-gpt-compat`.
 
 ## Behavior
@@ -55,7 +55,7 @@ merge development `main` merely to update a released build.
 ```sh
 git fetch upstream --tags
 git switch codex/native-gpt-compat
-git branch backup/native-gpt-compat-v4.0.18
+git branch backup/native-gpt-compat-v4.0.19
 git merge --no-ff <new-release-tag>
 ```
 
@@ -81,7 +81,7 @@ symbols in build-time helpers; the application's release strip setting is kept.
 
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
-the app a version such as `4.0.18-native-openai.1`; the UI and backend use that
+the app a version such as `4.0.19-native-openai.1`; the UI and backend use that
 marker to keep checking the official feed while refusing to install an official
 bundle over the fork. Clicking the update action shows a message asking ChatGPT
 to rebase or merge the patch onto the latest official release and rebuild it.
@@ -89,8 +89,8 @@ Fork builds are not official signed updater artifacts. No automatic deployment
 or application restart is performed by these commands.
 
 Update checks compare fork builds against their official release baseline:
-`4.0.18-native-openai.1` is current when the official feed reports `4.0.18`.
-A higher official release, such as `4.0.19`, still triggers the normal reminder
+`4.0.19-native-openai.1` is current when the official feed reports `4.0.19`.
+A higher official release, such as `4.0.20`, still triggers the normal reminder
 and the fork installation guard. Other builds keep standard version comparison.
 
 ## Upstream submission
