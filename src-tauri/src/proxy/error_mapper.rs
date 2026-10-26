@@ -24,6 +24,7 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 
         // 上游错误：使用实际状态码
         ProxyError::UpstreamError { status, .. } => *status,
+        ProxyError::UpstreamRateLimited { .. } => 429,
 
         // 超时错误：504 Gateway Timeout
         ProxyError::Timeout(_) | ProxyError::StreamIdleTimeout(_) => 504,
@@ -65,16 +66,14 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 
 /// 将 ProxyError 转换为用户友好的错误消息
 pub fn get_error_message(error: &ProxyError) -> String {
+    if let Some((status, body)) = error.upstream_response() {
+        let body = body
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("上游未返回错误内容");
+        return format!("上游错误 ({status}): {body}");
+    }
     match error {
-        ProxyError::UpstreamError { status, body } => {
-            // 上游没给内容时要明说，否则用户会以为是 CC Switch 把错误内容吞了（#6895）
-            let body = body
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("上游未返回错误内容");
-            format!("上游错误 ({status}): {body}")
-        }
         ProxyError::Timeout(msg) => format!("请求超时: {msg}"),
         ProxyError::ForwardFailed(msg) => format!("转发失败: {msg}"),
         ProxyError::NoAvailableProvider => "无可用 Provider".to_string(),

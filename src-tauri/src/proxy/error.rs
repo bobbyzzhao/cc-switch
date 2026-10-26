@@ -1,5 +1,5 @@
 use axum::{
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -45,6 +45,13 @@ pub enum ProxyError {
     #[error("上游错误 (状态码 {status}): {body:?}")]
     UpstreamError { status: u16, body: Option<String> },
 
+    #[error("上游限流 (429): {body:?}")]
+    UpstreamRateLimited {
+        body: Option<String>,
+        retry_after: Option<String>,
+        retry_after_ms: Option<String>,
+    },
+
     #[error("超过最大重试次数")]
     MaxRetriesExceeded,
 
@@ -79,15 +86,66 @@ pub enum ProxyError {
     Internal(String),
 }
 
+impl ProxyError {
+    pub fn upstream_response(&self) -> Option<(u16, Option<&str>)> {
+        match self {
+            Self::UpstreamError { status, body } => Some((*status, body.as_deref())),
+            Self::UpstreamRateLimited { body, .. } => Some((429, body.as_deref())),
+            _ => None,
+        }
+    }
+
+    /// Codex's 429 recovery requires a server wait hint. Preserve a real hint;
+    /// only a known transient rate_limit_exceeded gets the proxy's 5s fallback.
+    /// Billing/quota failures and other HTTP errors must not acquire retries.
+    pub fn retry_response_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Self::UpstreamRateLimited {
+            retry_after,
+            retry_after_ms,
+            ..
+        } = self
+        {
+            for (name, value) in [
+                ("retry-after", retry_after),
+                ("retry-after-ms", retry_after_ms),
+            ] {
+                if let Some(value) = value.as_ref().and_then(|v| HeaderValue::from_str(v).ok()) {
+                    headers.insert(name, value);
+                }
+            }
+            if !headers.contains_key("retry-after") {
+                if let Some(ms) = retry_after_ms.as_ref().and_then(|v| v.parse::<u64>().ok()) {
+                    let seconds = ms.div_ceil(1000).max(1);
+                    if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+                        headers.insert("retry-after", value);
+                    }
+                }
+            }
+        }
+        if !headers.contains_key("retry-after") {
+            if let Some((429, Some(body))) = self.upstream_response() {
+                let transient = serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .is_some_and(|v| {
+                        v.pointer("/error/code").and_then(|c| c.as_str())
+                            == Some("rate_limit_exceeded")
+                    });
+                if transient {
+                    headers.insert("retry-after", HeaderValue::from_static("5"));
+                }
+            }
+        }
+        headers
+    }
+}
+
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
-        let (status, body) = match &self {
-            ProxyError::UpstreamError {
-                status: upstream_status,
-                body: upstream_body,
-            } => {
+        let (status, body) = match self.upstream_response() {
+            Some((upstream_status, upstream_body)) => {
                 let http_status =
-                    StatusCode::from_u16(*upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+                    StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
 
                 // 尝试解析上游响应体为 JSON，如果失败则包装为字符串
                 let error_body = if let Some(body_str) = upstream_body {
@@ -162,7 +220,9 @@ impl IntoResponse for ProxyError {
                     ProxyError::ResponseBodyTooLarge(_) => {
                         (StatusCode::BAD_GATEWAY, self.to_string())
                     }
-                    ProxyError::UpstreamError { .. } => unreachable!(),
+                    ProxyError::UpstreamError { .. } | ProxyError::UpstreamRateLimited { .. } => {
+                        unreachable!()
+                    }
                 };
 
                 let error_body = json!({
@@ -176,7 +236,9 @@ impl IntoResponse for ProxyError {
             }
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        response.headers_mut().extend(self.retry_response_headers());
+        response
     }
 }
 
@@ -238,6 +300,99 @@ pub fn categorize_error(error: &reqwest::Error) -> ErrorCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_retry_headers_preserve_upstream_wait_hints() {
+        for (retry_after, retry_after_ms, expected) in [
+            (Some("17"), None, Some("17")),
+            (Some("0"), Some("1500"), Some("0")),
+            (
+                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+                None,
+                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+            ),
+            (None, Some("1501"), Some("2")),
+            (None, Some("0"), Some("1")),
+            (Some("invalid\r\nheader"), None, None),
+            (None, Some("invalid"), None),
+        ] {
+            let error = ProxyError::UpstreamRateLimited {
+                body: Some(r#"{"error":{"code":"unknown_limit"}}"#.into()),
+                retry_after: retry_after.map(str::to_owned),
+                retry_after_ms: retry_after_ms.map(str::to_owned),
+            };
+            let headers = error.retry_response_headers();
+            assert_eq!(
+                headers.get("retry-after").and_then(|v| v.to_str().ok()),
+                expected
+            );
+            assert_eq!(
+                headers.get("retry-after-ms").and_then(|v| v.to_str().ok()),
+                retry_after_ms
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_retry_fallback_excludes_quota_and_other_errors() {
+        for (status, body, expected) in [
+            (
+                429,
+                Some(r#"{"error":{"code":"rate_limit_exceeded"}}"#),
+                Some("5"),
+            ),
+            (
+                429,
+                Some(r#"{"error":{"code":"insufficient_quota"}}"#),
+                None,
+            ),
+            (429, Some(r#"{"error":{"type":"rate_limit_error"}}"#), None),
+            (429, Some("rate_limit_exceeded"), None),
+            (429, None, None),
+            (
+                400,
+                Some(r#"{"error":{"code":"rate_limit_exceeded"}}"#),
+                None,
+            ),
+            (
+                503,
+                Some(r#"{"error":{"code":"rate_limit_exceeded"}}"#),
+                None,
+            ),
+        ] {
+            let error = ProxyError::UpstreamError {
+                status,
+                body: body.map(str::to_owned),
+            };
+            assert_eq!(
+                error
+                    .retry_response_headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok()),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_response_keeps_status_and_upstream_error_body() {
+        let body = json!({"error": {"code": "rate_limit_exceeded", "message": "Please wait", "type": "rate_limit_error"}});
+        let response = ProxyError::UpstreamRateLimited {
+            body: Some(body.to_string()),
+            retry_after: Some("23".into()),
+            retry_after_ms: None,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "23");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            body
+        );
+    }
 
     #[derive(Debug)]
     struct Outer(std::io::Error);

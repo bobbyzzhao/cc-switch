@@ -46,6 +46,19 @@ separate: an existing conversation still has an aggregation model selected.
 Select a model from the new catalog. Such IDs are not silently rerouted to the
 default provider.
 
+### HTTP 429 recovery
+
+The proxy preserves upstream `Retry-After` and `retry-after-ms` on HTTP 429,
+including native `/responses/compact` errors. Millisecond-only hints also get
+an equivalent whole-second `Retry-After`, rounded up for clients that require it.
+If the upstream returns the explicit `rate_limit_exceeded` code without a wait
+hint, the proxy supplies a five-second delay. Quota errors and unclassified
+errors do not get a fabricated hint.
+
+The native client owns its bounded retry policy. This patch adds no generation
+retry loop to CC Switch or the Tencent bridge and does not change a successful
+stream, the request context, model, reasoning effort, or native compaction state.
+
 ## Updating the fork
 
 Keep the official repository as `upstream` and this fork as `fork`. Fetch official

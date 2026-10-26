@@ -2290,6 +2290,12 @@ fn build_codex_proxy_error_response(
             axum::http::HeaderValue::from_static("application/json"),
         )
         .body(axum::body::Body::from(body))
+        .map(|mut response| {
+            response
+                .headers_mut()
+                .extend(error.retry_response_headers());
+            response
+        })
         .map_err(|e| {
             log::error!("[Codex] 构建代理错误响应失败: {e}");
             ProxyError::Internal(format!("Failed to build proxy error response: {e}"))
@@ -2340,14 +2346,13 @@ fn codex_proxy_error_json(
     endpoint: &str,
     error: &ProxyError,
 ) -> Value {
-    let (mut body, upstream_status) = match error {
-        ProxyError::UpstreamError { status, body } => {
+    let (mut body, upstream_status) = match error.upstream_response() {
+        Some((status, body)) => {
             let parsed_body = body
-                .as_deref()
                 .map(|body| serde_json::from_str::<Value>(body).unwrap_or_else(|_| json!(body)));
             (
                 transform_codex_chat::chat_error_to_response_error(parsed_body.as_ref()),
-                Some(*status),
+                Some(status),
             )
         }
         _ => (
@@ -2462,7 +2467,9 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         ProxyError::TransformError(_) => "cc_switch_transform_error",
         ProxyError::InvalidRequest(_) => "cc_switch_invalid_request",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
-        ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
+        ProxyError::UpstreamError { .. } | ProxyError::UpstreamRateLimited { .. } => {
+            "cc_switch_upstream_error"
+        }
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
         ProxyError::Internal(_) => "cc_switch_internal_error",
         ProxyError::AlreadyRunning
@@ -4115,6 +4122,51 @@ mod stack_tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn rate_limit_wait_hint_reaches_codex_for_responses_and_native_compaction() {
+        let state = proxy_state();
+        let provider = crate::provider::Provider::with_id(
+            "tencent".into(),
+            "Tencent GPT".into(),
+            json!({}),
+            None,
+        );
+        let ctx = RequestContext::new(
+            &state,
+            &json!({}),
+            &axum::http::HeaderMap::new(),
+            AppType::Codex,
+            "Codex",
+            "codex",
+            Some(crate::mode::stack::StackTarget {
+                provider,
+                upstream_model: "gpt-6.1-sol".into(),
+                original_model: "ccs-tencent/gpt-6.1-sol".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        for (error, expected) in [
+            (ProxyError::UpstreamRateLimited {
+                body: Some(json!({"error": {"code": "rate_limit_exceeded", "message": "Please wait", "type": "rate_limit_error"}}).to_string()),
+                retry_after: Some("19".into()), retry_after_ms: Some("19000".into()),
+            }, Some("19")),
+            (ProxyError::UpstreamError { status: 429, body: Some(json!({"error": {"code": "rate_limit_exceeded", "message": "Please wait"}}).to_string()) }, Some("5")),
+            (ProxyError::UpstreamError { status: 429, body: Some(json!({"error": {"code": "insufficient_quota", "message": "Quota exhausted"}}).to_string()) }, None),
+        ] {
+            for (endpoint, stream) in [("/responses", true), ("/v1/responses", false), ("/responses/compact", false)] {
+                let response = build_codex_proxy_error_response(&ctx, endpoint, &error, stream).unwrap();
+                assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(response.headers().get("retry-after").and_then(|v| v.to_str().ok()), expected);
+                let (_, body) = json_of(response).await;
+                let upstream: Value = serde_json::from_str(error.upstream_response().unwrap().1.unwrap()).unwrap();
+                assert_eq!(body["error"]["code"], upstream["error"]["code"]);
+                assert_eq!(body["error"]["upstream_status"], 429);
+                assert_eq!(body["error"]["model"], "ccs-tencent/gpt-6.1-sol");
+            }
+        }
     }
 
     #[tokio::test]

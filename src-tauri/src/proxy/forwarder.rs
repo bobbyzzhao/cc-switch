@@ -2852,6 +2852,16 @@ impl RequestForwarder {
             Ok((response, resolved_claude_api_format, outbound_model))
         } else {
             let status_code = status.as_u16();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after-ms")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             // 错误响应同样可能被上游压缩（content-encoding）。reqwest 未启用任何
             // 自动解压 feature，这里拿到的是原始字节；不解压的话，压缩过的错误体会
             // 在 from_utf8 处变成非 UTF-8 而被丢弃，隐藏掉上游的限流/鉴权等详情。
@@ -2869,6 +2879,14 @@ impl RequestForwarder {
                 None => raw.to_vec(),
             };
             let body_text = String::from_utf8(decoded).ok();
+
+            if status_code == 429 && (retry_after.is_some() || retry_after_ms.is_some()) {
+                return Err(ProxyError::UpstreamRateLimited {
+                    body: body_text,
+                    retry_after,
+                    retry_after_ms,
+                });
+            }
 
             Err(ProxyError::UpstreamError {
                 status: status_code,
@@ -3348,6 +3366,7 @@ impl RequestForwarder {
                 400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => ErrorCategory::NonRetryable,
                 _ => ErrorCategory::Retryable,
             },
+            ProxyError::UpstreamRateLimited { .. } => ErrorCategory::Retryable,
             // Provider 级配置/转换问题：换一个 Provider 可能就能成功
             ProxyError::ConfigError(_) => ErrorCategory::Retryable,
             ProxyError::TransformError(_) => ErrorCategory::Retryable,
@@ -3363,10 +3382,10 @@ impl RequestForwarder {
 
 /// 从 ProxyError 中提取错误消息
 fn extract_error_message(error: &ProxyError) -> Option<String> {
-    match error {
-        ProxyError::UpstreamError { body, .. } => body.clone(),
-        _ => Some(error.to_string()),
+    if let Some((_, body)) = error.upstream_response() {
+        return body.map(str::to_owned);
     }
+    Some(error.to_string())
 }
 
 /// 检测 Provider 是否为 Bedrock（通过 CLAUDE_CODE_USE_BEDROCK 环境变量判断）
@@ -3432,18 +3451,13 @@ fn build_terminal_failure_log(
 }
 
 fn summarize_proxy_error(error: &ProxyError) -> String {
+    if let Some((status, body)) = error.upstream_response() {
+        let summary = body.map(summarize_upstream_body).filter(|s| !s.is_empty());
+        return summary
+            .map(|s| format!("上游 HTTP {status}: {s}"))
+            .unwrap_or_else(|| format!("上游 HTTP {status}"));
+    }
     match error {
-        ProxyError::UpstreamError { status, body } => {
-            let body_summary = body
-                .as_deref()
-                .map(summarize_upstream_body)
-                .filter(|summary| !summary.is_empty());
-
-            match body_summary {
-                Some(summary) => format!("上游 HTTP {status}: {summary}"),
-                None => format!("上游 HTTP {status}"),
-            }
-        }
         ProxyError::Timeout(message) => {
             format!("请求超时: {}", summarize_text_for_log(message, 180))
         }
@@ -7077,6 +7091,64 @@ mod tests {
                 "tools": tools,
                 "stream": false
             })
+        }
+
+        #[tokio::test]
+        async fn rate_limit_captures_wait_hints_without_retrying_the_upstream() {
+            for (retry_header, expected) in [
+                (Some(("retry-after", "9")), "9"),
+                (Some(("retry-after-ms", "1501")), "2"),
+                (None, "5"),
+            ] {
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let seen_request = seen.clone();
+                let app = axum::Router::new().fallback(move |headers: HeaderMap, bytes: Bytes| {
+                    let seen = seen_request.clone();
+                    async move {
+                        seen.lock().await.push(Seen { headers, body: serde_json::from_slice(&bytes).unwrap() });
+                        let mut response = axum::response::IntoResponse::into_response((
+                            StatusCode::TOO_MANY_REQUESTS,
+                            axum::Json(json!({"error": {"code": "rate_limit_exceeded", "message": "Please wait", "type": "rate_limit_error"}})),
+                        ));
+                        if let Some((name, value)) = retry_header {
+                            response.headers_mut().insert(name, HeaderValue::from_static(value));
+                        }
+                        response
+                    }
+                });
+                let upstream = Upstream {
+                    base_url: serve_upstream(app).await,
+                    seen,
+                };
+                let result = forwarder(true)
+                    .forward_with_retry(
+                        &AppType::Codex,
+                        http::Method::POST,
+                        "/responses",
+                        body("listed", json!([])),
+                        chatgpt_headers(),
+                        Extensions::new(),
+                        vec![provider(&upstream, "openai_responses")],
+                    )
+                    .await;
+                let error = match result {
+                    Err(failure) => failure.error,
+                    Ok(_) => panic!("429 must remain an error"),
+                };
+                assert_eq!(error.upstream_response().map(|v| v.0), Some(429));
+                assert_eq!(error.retry_response_headers()["retry-after"], expected);
+                assert!(error
+                    .upstream_response()
+                    .unwrap()
+                    .1
+                    .unwrap()
+                    .contains("rate_limit_exceeded"));
+                assert_eq!(
+                    upstream.seen.lock().await.len(),
+                    1,
+                    "the proxy must not replay generation"
+                );
+            }
         }
 
         async fn send(
