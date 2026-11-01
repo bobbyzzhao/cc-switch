@@ -2517,6 +2517,10 @@ impl RequestForwarder {
             // 保留客户端会话标识用于账号池粘性路由，但不保留官方账号或上游签发的状态。
             // 只限 Codex：Claude Code 自己的 `x-stainless-*`
             // 是 Anthropic SDK 的正常请求头，Stack 请求照常转发。
+            let preserve_native_protocol_header = codex_native_protocol
+                && !codex_responses_to_anthropic
+                && !codex_responses_to_chat
+                && is_codex_native_protocol_header(key_str);
             if should_strip_codex_client_fingerprint_header(
                 key_str,
                 &effective_endpoint,
@@ -2524,10 +2528,7 @@ impl RequestForwarder {
                 codex_responses_to_chat,
                 codex_stack_request || codex_native_protocol,
                 codex_official_auth_passthrough,
-            ) && !(codex_native_protocol
-                && !codex_responses_to_anthropic
-                && !codex_responses_to_chat
-                && is_codex_native_protocol_header(key_str))
+            ) && !preserve_native_protocol_header
             {
                 continue;
             }
