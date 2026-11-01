@@ -2,9 +2,9 @@
 
 This branch adds an explicit, disabled-by-default capability declaration for
 third-party Responses gateways that preserve OpenAI's native Codex compaction
-protocol. It is based on upstream `v4.0.20` plus merged `main` fixes `#8849` and `#8879`
-(`e8e1cfbff4f2d93f2d6c4ba4ad10b511e012c733`). The fork's `main` remains upstream
-code; the patch is maintained on `codex/native-gpt-compat`.
+protocol. It is based on upstream `v4.0.23` (`8be840557bacd89d592f13ddc1bee0586afaea14`).
+The fork's `main` remains upstream code; the patch is maintained on
+`codex/native-gpt-compat`.
 
 ## Behavior
 
@@ -68,7 +68,7 @@ merge development `main` merely to update a released build.
 ```sh
 git fetch upstream --tags
 git switch codex/native-gpt-compat
-git branch backup/native-gpt-compat-v4.0.20
+git branch backup/native-gpt-compat-v4.0.23
 git merge --no-ff <new-release-tag>
 ```
 
@@ -94,7 +94,7 @@ symbols in build-time helpers; the application's release strip setting is kept.
 
 The backup branch keeps the previous working release. Review the diff against
 the new release before distributing its build. The committed fork config gives
-the app a version such as `4.0.20-native-openai.1`; the UI and backend use that
+the app a version such as `4.0.23-native-openai.1`; the UI and backend use that
 marker to keep checking the official feed while refusing to install an official
 bundle over the fork. Clicking the update action shows a message asking ChatGPT
 to rebase or merge the patch onto the latest official release and rebuild it.
@@ -102,8 +102,8 @@ Fork builds are not official signed updater artifacts. No automatic deployment
 or application restart is performed by these commands.
 
 Update checks compare fork builds against their official release baseline:
-`4.0.20-native-openai.1` is current when the official feed reports `4.0.20`.
-A higher official release, such as `4.0.21`, still triggers the normal reminder
+`4.0.23-native-openai.1` is current when the official feed reports `4.0.23`.
+A higher official release, such as `4.0.24`, still triggers the normal reminder
 and the fork installation guard. Other builds keep standard version comparison.
 
 ## Upstream submission
