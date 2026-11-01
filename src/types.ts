@@ -221,6 +221,8 @@ export interface ProviderMeta {
   codexOfficialCompatible?: boolean;
   // Codex Responses -> Chat Completions reasoning capability metadata
   codexChatReasoning?: CodexChatReasoning;
+  // Claude route → OpenAI Chat / Responses: how the client's thinking effort is sent upstream (absent = auto)
+  claudeReasoningEffort?: ClaudeReasoningEffortMode;
   // Codex → Anthropic path: emulate the Claude Code client (disabled by default; only an explicit true enables it)
   impersonateClaudeCode?: boolean;
   // Codex → Anthropic path: override the Anthropic max_tokens (output ceiling).
@@ -272,6 +274,9 @@ export type ClaudeApiFormat =
   | "openai_responses"
   | "gemini_native";
 
+// Claude 路由经 OpenAI Chat / Responses 转发时思考档位的发法；缺省 = 自动
+export type ClaudeReasoningEffortMode = "off" | "passthrough";
+
 // Codex API 格式类型
 // - "openai_responses": OpenAI Responses API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
@@ -319,6 +324,7 @@ export interface VisibleApps {
   pi: boolean;
   mcode: boolean;
   kimi: boolean;
+  dsh?: boolean;
   agy: boolean;
   omp: boolean;
 }
@@ -774,6 +780,7 @@ export interface McpServerSpec {
 export interface McpApps {
   mcode?: boolean;
   kimi?: boolean;
+  dsh?: boolean;
   agy?: boolean;
   claude: boolean;
   "claude-desktop"?: boolean;
