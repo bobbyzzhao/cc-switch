@@ -107,6 +107,7 @@ import {
   fillCodexCatalogModel,
   metadataFilledAnything,
 } from "./modelMetadataFill";
+import { normalizeEnabledCodexChatEffortParam } from "./helpers/codexChatReasoning";
 import type {
   ClaudeApiKeyField,
   CodexApiFormat,
@@ -862,7 +863,7 @@ export function CodexFormFields({
         supportsThinking: checked ? true : codexChatReasoning.supportsThinking,
         supportsEffort: checked,
         effortParam: checked
-          ? (codexChatReasoning.effortParam ?? "reasoning_effort")
+          ? normalizeEnabledCodexChatEffortParam(codexChatReasoning.effortParam)
           : "none",
       });
     },
