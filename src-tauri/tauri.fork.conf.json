@@ -1,5 +1,5 @@
 {
-  "version": "4.0.23-native-openai.1",
+  "version": "4.0.24-native-openai.1",
   "build": {
     "beforeBuildCommand": ""
   },
