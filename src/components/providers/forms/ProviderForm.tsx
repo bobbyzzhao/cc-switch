@@ -785,18 +785,23 @@ function ProviderFormFull({
     codexModel,
     codexSubagentModel,
     codexSubagentReasoningEffort,
+    codexAgentMaxThreads,
+    codexMultiAgentV2Total,
     codexCatalogModels,
     codexAutoReviewModel,
+    codexOfficialSpeedTiers,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     setCodexCatalogModels,
     setCodexAutoReviewModel,
+    setCodexOfficialSpeedTiers,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelChange,
     handleCodexSubagentModelChange,
     handleCodexSubagentReasoningEffortChange,
+    handleCodexAgentMaxThreadsChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
@@ -1809,6 +1814,7 @@ function ProviderFormFull({
           modelCatalog?: {
             models: CodexCatalogModel[];
             autoReviewModel?: string;
+            officialSpeedTiers?: boolean;
           };
         };
         if (normalizedCatalogModels.length > 0) {
@@ -1822,6 +1828,9 @@ function ProviderFormFull({
             )
           ) {
             configObj.modelCatalog.autoReviewModel = autoReviewModel;
+          }
+          if (codexOfficialSpeedTiers) {
+            configObj.modelCatalog.officialSpeedTiers = true;
           }
         }
         settingsConfig = JSON.stringify(configObj);
@@ -2882,6 +2891,9 @@ function ProviderFormFull({
               onSubagentReasoningEffortChange={
                 handleCodexSubagentReasoningEffortChange
               }
+              agentMaxThreads={codexAgentMaxThreads}
+              multiAgentV2Total={codexMultiAgentV2Total}
+              onAgentMaxThreadsChange={handleCodexAgentMaxThreadsChange}
               apiFormat={localCodexApiFormat}
               onApiFormatChange={handleCodexApiFormatChange}
               copilotApiFormat={effectiveCodexCopilotApiFormat}
@@ -2902,6 +2914,8 @@ function ProviderFormFull({
               onCatalogModelsChange={setCodexCatalogModels}
               autoReviewModel={codexAutoReviewModel}
               onAutoReviewModelChange={setCodexAutoReviewModel}
+              officialSpeedTiers={codexOfficialSpeedTiers}
+              onOfficialSpeedTiersChange={setCodexOfficialSpeedTiers}
               speedTestEndpoints={speedTestEndpoints}
               customUserAgent={customUserAgent}
               onCustomUserAgentChange={setCustomUserAgent}

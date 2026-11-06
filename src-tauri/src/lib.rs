@@ -110,6 +110,31 @@ fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn disable_windows_general_autofill<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows::core::Interface;
+
+    let result = webview.with_webview(|platform_webview| {
+        let result = unsafe {
+            platform_webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|webview| webview.Settings())
+                .and_then(|settings| settings.cast::<ICoreWebView2Settings4>())
+                .and_then(|settings| settings.SetIsGeneralAutofillEnabled(false))
+        };
+
+        if let Err(error) = result {
+            log::warn!("禁用 Windows WebView2 常规自动填充失败: {error}");
+        }
+    });
+
+    if let Err(error) = result {
+        log::warn!("访问 Windows WebView2 失败: {error}");
+    }
+}
+
 pub(crate) struct RedactedUrl<'a> {
     url: &'a str,
     known_secrets: &'a [String],
@@ -457,6 +482,19 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.plugin(
+            tauri::plugin::Builder::<_, ()>::new("windows-general-autofill")
+                .on_webview_ready(|webview| {
+                    if webview.label() == "main" {
+                        disable_windows_general_autofill(&webview);
+                    }
+                })
+                .build(),
+        );
+    }
+
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -480,7 +518,10 @@ pub fn run() {
                 && !startup_page_handled.swap(true, Ordering::Relaxed)
                 && !crate::settings::get_settings().silent_startup
             {
-                let _ = webview.window().show();
+                let window = webview.window();
+                if window.show().is_ok() {
+                    let _ = window.emit("main-window-visibility-changed", ());
+                }
                 log::info!("主页面加载完成，主窗口已显示");
             }
         });
@@ -511,7 +552,10 @@ pub fn run() {
 
                 if settings.minimize_to_tray_on_close {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if window.hide().is_ok() {
+                        // An already-unfocused window may emit no blur/resize.
+                        let _ = window.emit("main-window-visibility-changed", ());
+                    }
                     log::info!("关闭请求已处理：最小化到托盘");
                     #[cfg(target_os = "windows")]
                     {
@@ -1399,23 +1443,24 @@ pub fn run() {
                     state.inner().clone(),
                 );
 
-                // Periodic backup check (on startup)
-                if let Err(e) = state.db.periodic_backup_if_needed() {
-                    log::warn!("Periodic backup failed on startup: {e}");
-                }
-
-                // Periodic maintenance timer: run once per day while the app is running
+                // Backup and log maintenance can hold the database lock for a
+                // long time. Keep disk work off both the UI and async workers.
+                // The first interval tick runs startup maintenance; later ticks
+                // run daily, without a catch-up burst after sleep.
                 let db_for_timer = state.db.clone();
                 tauri::async_runtime::spawn(async move {
                     const PERIODIC_MAINTENANCE_INTERVAL_SECS: u64 = 24 * 60 * 60;
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                         PERIODIC_MAINTENANCE_INTERVAL_SECS,
                     ));
-                    interval.tick().await; // skip immediate first tick (already checked above)
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
-                        if let Err(e) = db_for_timer.periodic_backup_if_needed() {
-                            log::warn!("Periodic maintenance timer failed: {e}");
+                        let db = db_for_timer.clone();
+                        match tauri::async_runtime::spawn_blocking(move || db.periodic_backup_if_needed()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => log::warn!("Periodic maintenance failed: {e}"),
+                            Err(e) => log::warn!("Periodic maintenance task failed: {e}"),
                         }
                     }
                 });
@@ -1511,7 +1556,9 @@ pub fn run() {
                     }
                 } else if settings.silent_startup {
                     // 静默启动模式：保持窗口隐藏
-                    let _ = window.hide();
+                    if window.hide().is_ok() {
+                        let _ = window.emit("main-window-visibility-changed", ());
+                    }
                     #[cfg(target_os = "windows")]
                     let _ = window.set_skip_taskbar(true);
                     #[cfg(target_os = "macos")]
@@ -1520,7 +1567,9 @@ pub fn run() {
                 } else {
                     // 正常启动模式：显示窗口
                     #[cfg(not(target_os = "windows"))]
-                    let _ = window.show();
+                    if window.show().is_ok() {
+                        let _ = window.emit("main-window-visibility-changed", ());
+                    }
                     #[cfg(target_os = "windows")]
                     log::info!("正常启动模式：等待主页面加载完成后显示主窗口");
                     #[cfg(not(target_os = "windows"))]
@@ -1628,6 +1677,8 @@ pub fn run() {
             commands::set_mcp_enabled,
             // Unified MCP management
             commands::get_mcp_servers,
+            commands::start_mcp_connectivity_checks,
+            commands::cancel_mcp_connectivity_checks,
             commands::upsert_mcp_server,
             commands::delete_mcp_server,
             commands::toggle_mcp_app,
@@ -1817,12 +1868,14 @@ pub fn run() {
             commands::get_models_dev_sync_config,
             commands::save_models_dev_sync_config,
             commands::record_models_dev_sync_result,
+            commands::fetch_models_dev,
             commands::check_provider_limits,
             // Session usage sync
             commands::sync_session_usage,
             commands::rebuild_codex_usage,
             commands::get_session_usage_last_sync,
             commands::get_usage_data_sources,
+            commands::fetch_exchange_rates,
             // Stream health check
             commands::stream_check_provider,
             // Session manager
