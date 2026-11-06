@@ -32,6 +32,7 @@ vi.mock("@/components/providers/forms/hooks", async (importOriginal) => {
 });
 
 const LABEL = "原生 OpenAI 协议兼容";
+const OFFICIAL_FAST_LABEL = "保留官方 Fast 档";
 const CONFIG =
   'model_provider = "custom"\nmodel = "gpt-6.1-sol"\n\n[model_providers.custom]\nname = "custom"\nwire_api = "responses"\nbase_url = "https://relay.example/v1"\nexperimental_bearer_token = "sk-test"\n';
 
@@ -122,6 +123,36 @@ describe("ProviderForm native OpenAI compatibility opt-in", () => {
     expect(screen.getByRole("checkbox", { name: LABEL })).toBeChecked();
     const values = await save(onSubmit);
     expect(values.meta?.codexOfficialCompatible).toBe(true);
+  });
+
+  it("uses native compatibility as the only Fast control in stack mode", () => {
+    renderForm(vi.fn(), { modeView: "stack" });
+
+    expect(screen.getByRole("checkbox", { name: LABEL })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: OFFICIAL_FAST_LABEL }),
+    ).toBeNull();
+  });
+
+  it("keeps the official Fast control for ordinary route providers", () => {
+    renderForm(vi.fn(), { modeView: "route" });
+
+    fireEvent.click(screen.getByRole("button", { name: /高级选项/ }));
+    expect(
+      screen.getByRole("switch", { name: OFFICIAL_FAST_LABEL }),
+    ).not.toBeChecked();
+  });
+
+  it("hides the overlapping official Fast control when native compatibility is enabled", () => {
+    renderForm(vi.fn(), {
+      modeView: "route",
+      meta: { codexOfficialCompatible: true },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /高级选项/ }));
+    expect(
+      screen.queryByRole("switch", { name: OFFICIAL_FAST_LABEL }),
+    ).toBeNull();
   });
 
   it("loads an enabled provider and removes its opt-in when disabled", async () => {

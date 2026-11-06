@@ -7413,10 +7413,10 @@ mod tests {
                         &AppType::Codex,
                         http::Method::POST,
                         "/responses",
-                        body("listed", json!([])),
+                        &body("listed", json!([])),
                         chatgpt_headers(),
                         Extensions::new(),
-                        vec![provider(&upstream, "openai_responses")],
+                        &[provider(&upstream, "openai_responses")],
                     )
                     .await;
                 let error = match result {

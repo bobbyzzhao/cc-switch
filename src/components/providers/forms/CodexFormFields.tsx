@@ -1411,9 +1411,12 @@ export function CodexFormFields({
 
   // 保留官方 Fast 档：镜像官方的 GPT 行默认清空速度档，后面接官方账号的中转（如 CPA）才认
   // service_tier=priority。Chat、Anthropic 转换会把它转给不认的上游，Copilot 走自己的目录，
-  // 都只给原生 Responses；聚合布局不显示（合并目录不看卡上的设置）。
+  // 都只给原生 Responses。聚合目录不看卡上的设置，原生兼容开关已经同时保留 Fast 和压缩身份，
+  // 所以这里在聚合布局及原生兼容开启时隐藏，避免出现两个互相重叠的开关。
   const officialSpeedTiersToggle = onOfficialSpeedTiersChange &&
     !isCopilotPreset &&
+    !officialCompatible &&
+    variant !== "stack" &&
     effectiveApiFormat === "openai_responses" && (
       <div className="flex items-center justify-between gap-4">
         {labelWithHelp(
